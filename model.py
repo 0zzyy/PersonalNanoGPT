@@ -18,8 +18,12 @@ class SelfAttention(nn.Module):
         q = self.query(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         k = self.key(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
         v = self.value(x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+
         att = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        mask = torch.tril(torch.ones(T, T, device=x.device)).view(1, 1, T, T)
+        att = att.masked_fill(mask == 0, float('-inf'))
         att = torch.softmax(att, dim=-1)
+
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         return self.proj(y)
