@@ -66,6 +66,7 @@ class GPT(nn.Module):
         self.head = nn.Linear(embed_dim, vocab_size, bias=False)
         self.block_size = block_size
         self.apply(self._init_weights)
+        self.temperature = 1.0  # for calibrated decoding
 
     def _init_weights(self, module: nn.Module):
         if isinstance(module, nn.Linear):
@@ -87,3 +88,38 @@ class GPT(nn.Module):
         x = self.ln_f(x)
         logits = self.head(x)
         return logits
+
+    def calibrate(self, loader) -> float:
+        """Estimate a temperature for probability calibration."""
+        self.eval()
+        logits_list, labels = [], []
+        with torch.no_grad():
+            for x, y in loader:
+                out = self(x)
+                logits_list.append(out.view(-1, out.size(-1)))
+                labels.append(y.view(-1))
+        logits = torch.cat(logits_list)
+        labels = torch.cat(labels)
+        best_t, best_loss = 1.0, float('inf')
+        for t in torch.linspace(0.5, 2.0, steps=10):
+            loss = nn.functional.cross_entropy(logits / t, labels)
+            if loss < best_loss:
+                best_loss = loss
+                best_t = t.item()
+        self.temperature = best_t
+        return best_t
+
+    @torch.no_grad()
+    def generate_reward_augmented(self, idx: torch.Tensor, max_new_tokens: int,
+                                  reward_fn, beta: float = 1.0,
+                                  temperature: float = 1.0):
+        self.eval()
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.block_size:]
+            logits = self(idx_cond)[:, -1, :] / (temperature * self.temperature)
+            logits = logits + beta * reward_fn(idx_cond)
+            probs = torch.softmax(logits, dim=-1)
+            next_id = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, next_id], dim=1)
+        return idx
+
