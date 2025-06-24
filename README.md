@@ -6,9 +6,13 @@ PersonalNanoGPT is a minimal, lightweight PyTorch implementation of a Transforme
 
 - Multi-head self-attention layers with causal masking for autoregressive generation  
 - Position-wise feed-forward networks and layer normalization for stable training  
-- Configurable hyperparameters: context length (`block-size`), embedding size, number of layers, number of heads  
-- Simple training loop that tokenizes plain text and optimizes the model using AdamW  
-- Easy inference: load saved weights and generate text with autoregressive sampling  
+- Configurable hyperparameters: context length (`block-size`), embedding size, number of layers, number of heads
+- Simple training loop that tokenizes plain text and optimizes the model using AdamW
+- Easy inference: load saved weights and generate text with autoregressive sampling
+- Offline RL training with reward-weighted updates
+- Reward-augmented decoding for domain control
+- Self-alignment via domain term rewards
+- Temperature-based calibration for confidence estimates
 
 ## Requirements
 
@@ -34,13 +38,24 @@ python train.py \
   --epochs 5 \
   --batch-size 64 \
   --block-size 128 \
-  --output gpt.pth
+ --output gpt.pth
 ```
 
 - `--epochs`: number of training epochs (default: 1)  
 - `--batch-size`: training batch size (default: 64)  
 - `--block-size`: context length (default: 128)  
 - `--output`: path to save trained model weights (optional)
+
+### Offline RL Training
+
+Use `advanced.py` to train from a dataset containing text and rewards separated by `|`:
+
+```bash
+python advanced.py \
+  --offline-data reward_data.txt \
+  --epochs 3 \
+  --output gpt_offline.pth
+```
 
 3. Generate text after training:
 
@@ -62,6 +77,14 @@ out = model.generate(idx, max_new_tokens=100, temperature=1.0)
 # Convert token IDs back to text
 generated = ''.join([itos[i.item()] for i in out[0]])
 print(generated)
+```
+
+For reward-guided generation:
+
+```python
+reward_fn = char_reward_fn(['g'], stoi)
+out = model.generate_reward_augmented(idx, max_new_tokens=50,
+                                      reward_fn=reward_fn, beta=0.5)
 ```
 
 ## Repository Structure
