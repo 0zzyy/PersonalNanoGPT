@@ -1,6 +1,9 @@
-import torch
+import sys
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+import torch
 from model import GPT
 from advanced import RewardTextDataset, char_reward_fn
 
