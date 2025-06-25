@@ -57,6 +57,19 @@ python advanced.py \
   --output gpt_offline.pth
 ```
 
+### Knowledge Discovery Training
+
+`explore.py` provides a lightweight interface for personalised data exploration
+on structured (`.csv`), semi-structured (`.jsonl`) and unstructured (`.txt`)
+datasets.
+
+```bash
+python explore.py \
+  --data path/to/data.csv \
+  --epochs 2 \
+  --output gpt_knowledge.pth
+```
+
 3. Generate text after training:
 
 ```python
