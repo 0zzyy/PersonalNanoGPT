@@ -39,6 +39,8 @@ class RewardTextDataset(Dataset):
             x = torch.tensor(encoded[:-1], dtype=torch.long)
             y = torch.tensor(encoded[1:], dtype=torch.long)
             self.samples.append((x, y, r))
+        if len(self.samples) == 0:
+            raise ValueError("No valid samples found in reward dataset.")
 
     def __len__(self):
         return len(self.samples)
@@ -56,11 +58,13 @@ def collate_reward(batch: Iterable):
     max_len = max(x.size(0) for x in xs)
     x_pad = torch.zeros(len(xs), max_len, dtype=torch.long)
     y_pad = torch.zeros(len(ys), max_len, dtype=torch.long)
+    mask = torch.zeros(len(xs), max_len, dtype=torch.bool)
     for i, (x, y) in enumerate(zip(xs, ys)):
         x_pad[i, :x.size(0)] = x
         y_pad[i, :y.size(0)] = y
-    r = torch.tensor(rs, dtype=torch.float)
-    return x_pad, y_pad, r
+        mask[i, :x.size(0)] = True
+    r = torch.stack(list(rs))
+    return x_pad, y_pad, r, mask
 
 
 def train_offline_rl(args: argparse.Namespace):
@@ -70,21 +74,30 @@ def train_offline_rl(args: argparse.Namespace):
                         collate_fn=collate_reward)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = GPT(ds.vocab_size, block_size=args.block_size).to(device)
-    optim = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    model = GPT(ds.vocab_size, block_size=args.block_size, dropout=0.1).to(device)
+    optim = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     for epoch in range(args.epochs):
-        for x, y, r in loader:
-            x, y, r = x.to(device), y.to(device), r.to(device)
+        total_loss = 0.0
+        num_batches = 0
+        for x, y, r, mask in loader:
+            x, y, r, mask = x.to(device), y.to(device), r.to(device), mask.to(device)
             logits = model(x)
             loss_per_token = F.cross_entropy(
                 logits.view(-1, ds.vocab_size), y.view(-1), reduction='none')
-            loss_seq = loss_per_token.view(x.size(0), -1).mean(dim=1)
+            loss_per_token = loss_per_token.view(x.size(0), -1)
+            loss_per_token = loss_per_token * mask.float()
+            seq_lengths = mask.sum(dim=1).float().clamp(min=1)
+            loss_seq = loss_per_token.sum(dim=1) / seq_lengths
             loss = (loss_seq * r).mean()
             optim.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optim.step()
-        print(f"Offline RL Epoch {epoch+1}: loss {loss.item():.4f}")
+            total_loss += loss.item()
+            num_batches += 1
+        avg_loss = total_loss / max(num_batches, 1)
+        print(f"Offline RL Epoch {epoch+1}: loss {avg_loss:.4f}")
 
     if args.output:
         torch.save(model.state_dict(), args.output)
@@ -108,6 +121,8 @@ def main():
     p.add_argument('--epochs', type=int, default=1)
     p.add_argument('--batch-size', type=int, default=16)
     p.add_argument('--block-size', type=int, default=128)
+    p.add_argument('--lr', type=float, default=1e-3,
+                   help='Learning rate')
     p.add_argument('--output', type=str,
                    help='Optional path to save trained model')
     args = p.parse_args()

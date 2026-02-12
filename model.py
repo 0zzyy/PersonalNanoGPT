@@ -3,7 +3,7 @@ import torch.nn as nn
 import math
 
 class SelfAttention(nn.Module):
-    def __init__(self, embed_dim: int, num_heads: int):
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.0):
         super().__init__()
         assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
         self.num_heads = num_heads
@@ -12,6 +12,8 @@ class SelfAttention(nn.Module):
         self.key = nn.Linear(embed_dim, embed_dim)
         self.value = nn.Linear(embed_dim, embed_dim)
         self.proj = nn.Linear(embed_dim, embed_dim)
+        self.attn_drop = nn.Dropout(dropout)
+        self.proj_drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size()
@@ -23,28 +25,30 @@ class SelfAttention(nn.Module):
         mask = torch.tril(torch.ones(T, T, device=x.device)).view(1, 1, T, T)
         att = att.masked_fill(mask == 0, float('-inf'))
         att = torch.softmax(att, dim=-1)
+        att = self.attn_drop(att)
 
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
-        return self.proj(y)
+        return self.proj_drop(self.proj(y))
 
 class FeedForward(nn.Module):
-    def __init__(self, embed_dim: int, hidden_dim: int):
+    def __init__(self, embed_dim: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
         self.fc1 = nn.Linear(embed_dim, hidden_dim)
         self.gelu = nn.GELU()
         self.fc2 = nn.Linear(hidden_dim, embed_dim)
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor):
-        return self.fc2(self.gelu(self.fc1(x)))
+        return self.drop(self.fc2(self.gelu(self.fc1(x))))
 
 class TransformerBlock(nn.Module):
-    def __init__(self, embed_dim: int, num_heads: int, hidden_dim: int):
+    def __init__(self, embed_dim: int, num_heads: int, hidden_dim: int, dropout: float = 0.0):
         super().__init__()
         self.ln1 = nn.LayerNorm(embed_dim)
-        self.attn = SelfAttention(embed_dim, num_heads)
+        self.attn = SelfAttention(embed_dim, num_heads, dropout)
         self.ln2 = nn.LayerNorm(embed_dim)
-        self.ff = FeedForward(embed_dim, hidden_dim)
+        self.ff = FeedForward(embed_dim, hidden_dim, dropout)
 
     def forward(self, x: torch.Tensor):
         x = x + self.attn(self.ln1(x))
@@ -53,13 +57,15 @@ class TransformerBlock(nn.Module):
 
 class GPT(nn.Module):
     def __init__(self, vocab_size: int, embed_dim: int = 256, num_heads: int = 8,
-                 num_layers: int = 4, hidden_dim: int = 512, block_size: int = 128):
+                 num_layers: int = 4, hidden_dim: int = 512, block_size: int = 128,
+                 dropout: float = 0.0):
         super().__init__()
         self.embed_dim = embed_dim
         self.token_emb = nn.Embedding(vocab_size, embed_dim)
         self.pos_emb = nn.Embedding(block_size, embed_dim)
+        self.drop = nn.Dropout(dropout)
         self.blocks = nn.ModuleList([
-            TransformerBlock(embed_dim, num_heads, hidden_dim)
+            TransformerBlock(embed_dim, num_heads, hidden_dim, dropout)
             for _ in range(num_layers)
         ])
         self.ln_f = nn.LayerNorm(embed_dim)
@@ -82,12 +88,25 @@ class GPT(nn.Module):
         pos = torch.arange(0, T, device=idx.device).unsqueeze(0)
         tok_emb = self.token_emb(idx)
         pos_emb = self.pos_emb(pos)
-        x = tok_emb + pos_emb
+        x = self.drop(tok_emb + pos_emb)
         for block in self.blocks:
             x = block(x)
         x = self.ln_f(x)
         logits = self.head(x)
         return logits
+
+    @torch.no_grad()
+    def generate(self, idx: torch.Tensor, max_new_tokens: int,
+                 temperature: float = 1.0) -> torch.Tensor:
+        """Autoregressively generate new tokens."""
+        self.eval()
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.block_size:]
+            logits = self(idx_cond)[:, -1, :] / temperature
+            probs = torch.softmax(logits, dim=-1)
+            next_id = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, next_id], dim=1)
+        return idx
 
     def calibrate(self, loader) -> float:
         """Estimate a temperature for probability calibration."""
@@ -116,10 +135,10 @@ class GPT(nn.Module):
         self.eval()
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.block_size:]
-            logits = self(idx_cond)[:, -1, :] / (temperature * self.temperature)
+            logits = self(idx_cond)[:, -1, :] / self.temperature  # calibration correction
+            logits = logits / temperature  # user-controlled sampling temperature
             logits = logits + beta * reward_fn(idx_cond)
             probs = torch.softmax(logits, dim=-1)
             next_id = torch.multinomial(probs, num_samples=1)
             idx = torch.cat([idx, next_id], dim=1)
         return idx
-

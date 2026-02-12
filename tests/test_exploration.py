@@ -2,7 +2,9 @@ import sys
 from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
+DATA_DIR = Path(__file__).resolve().parent / 'data'
 
+import pytest
 import torch
 from explore import KnowledgeDataset
 from model import GPT
@@ -10,7 +12,7 @@ from advanced import char_reward_fn
 
 
 def run_case(filename, reward_chars):
-    path = Path('tests/data') / filename
+    path = DATA_DIR / filename
     ds = KnowledgeDataset(path, block_size=8)
     model = GPT(ds.vocab_size, block_size=8)
     if ds.vocab_size == 0:
@@ -38,3 +40,11 @@ def test_knowledge_dataset_variants():
     ]
     for fname, chars in scenarios:
         run_case(fname, chars)
+
+
+def test_empty_file_raises(tmp_path):
+    """Test that empty files raise ValueError instead of crashing."""
+    empty_file = tmp_path / "empty.txt"
+    empty_file.write_text("")
+    with pytest.raises(ValueError):
+        KnowledgeDataset(empty_file, block_size=8)

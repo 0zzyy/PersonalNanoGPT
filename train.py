@@ -17,6 +17,11 @@ class TextDataset(Dataset):
         self.block_size = block_size
         encoded = [self.stoi[ch] for ch in data]
         self.data = torch.tensor(encoded, dtype=torch.long)
+        if len(self.data) <= self.block_size:
+            raise ValueError(
+                f"Dataset too short ({len(self.data)} tokens) for block_size={self.block_size}. "
+                f"Need at least {self.block_size + 1} tokens."
+            )
 
     def __len__(self):
         return len(self.data) - self.block_size
@@ -32,18 +37,24 @@ def train(args):
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=True)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = GPT(ds.vocab_size, block_size=args.block_size).to(device)
-    optim = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    model = GPT(ds.vocab_size, block_size=args.block_size, dropout=0.1).to(device)
+    optim = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     for epoch in range(args.epochs):
+        total_loss = 0.0
+        num_batches = 0
         for x, y in loader:
             x, y = x.to(device), y.to(device)
             logits = model(x)
             loss = F.cross_entropy(logits.view(-1, ds.vocab_size), y.view(-1))
             optim.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optim.step()
-        print(f"Epoch {epoch+1}: loss {loss.item():.4f}")
+            total_loss += loss.item()
+            num_batches += 1
+        avg_loss = total_loss / max(num_batches, 1)
+        print(f"Epoch {epoch+1}: loss {avg_loss:.4f}")
 
     if args.output:
         torch.save(model.state_dict(), args.output)
@@ -59,6 +70,8 @@ def main():
                    help='Training batch size')
     p.add_argument('--block-size', type=int, default=128,
                    help='Context size for the model')
+    p.add_argument('--lr', type=float, default=1e-3,
+                   help='Learning rate')
     p.add_argument('--output', type=str,
                    help='Optional path to save trained model')
     args = p.parse_args()
